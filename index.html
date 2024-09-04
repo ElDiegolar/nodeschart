@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Crypto Chart with SMA, MACD, 4-Hour, and 1-Hour Data</title>
+    <!-- Include Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Include Date Adapter for time scales -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <!-- Include Chart.js Zoom Plugin -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
+    <style>
+        /* Ensure the MACD chart is thinner and spans 100% width */
+
+
+        /* Make sure the crypto chart spans 100% width as well */
+        #cryptoChart {
+            width: 100% !important;
+        }
+
+        /* To make sure both charts are responsive */
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+
+<body>
+    <div>
+        <canvas id="cryptoChart"></canvas>
+    </div>
+    <div>
+        <canvas id="macdChart"></canvas>
+    </div>
+    <script>
+        async function fetchData() {
+            // Fetch data from the Node.js server
+            const response = await fetch('/data');
+            const data = await response.json();
+            return data;
+        }
+
+        fetchData().then((data) => {
+            const priceCtx = document.getElementById('cryptoChart').getContext('2d');
+            const macdCtx = document.getElementById('macdChart').getContext('2d');
+
+            // Main Price Chart with SMAs, 4-hour, and 1-hour data
+            const cryptoChart = new Chart(priceCtx, {
+                type: 'line',
+                data: {
+                    labels: data.labels,
+                    datasets: [
+                        {
+                            label: 'BTC/USDT Price',
+                            data: data.prices,
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            fill: false,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: '50-Day SMA',
+                            data: data.sma50,
+                            borderColor: 'rgba(255, 99, 132, 1)',
+                            fill: false,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: '200-Day SMA',
+                            data: data.sma200,
+                            borderColor: 'rgba(54, 162, 235, 1)',
+                            fill: false,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: '4-Hour Price',
+                            data: data.hour4Prices,
+                            borderColor: 'rgba(255, 159, 64, 1)',
+                            fill: false,
+                            yAxisID: 'y',
+                            borderWidth: 1,
+                        },
+                        {
+                            label: '1-Hour Price',
+                            data: data.hour1Prices,
+                            borderColor: 'rgba(153, 102, 255, 1)',
+                            fill: false,
+                            yAxisID: 'y',
+                            borderWidth: 0.5,
+                        },
+                    ]
+                },
+                options: {
+                    scales: {
+                        x: {
+                            type: 'time', // Use time scale
+                            time: {
+                                unit: 'day' // Display by day
+                            }
+                        },
+                        y: {
+                            beginAtZero: false,
+                            position: 'left',
+                            title: {
+                                display: true,
+                                text: 'Price'
+                            }
+                        }
+                    },
+                    plugins: {
+                        zoom: {
+                            pan: {
+                                enabled: true,
+                                mode: 'x', // Enable panning along the x-axis
+                            },
+                            zoom: {
+                                wheel: {
+                                    enabled: true, // Enable zooming with the mouse wheel
+                                },
+                                pinch: {
+                                    enabled: true // Enable zooming with pinch gestures
+                                },
+                                mode: 'x', // Enable zooming along the x-axis
+                            }
+                        }
+                    }
+                }
+            });
+
+            // MACD Chart with the same time scale
+            const macdChart = new Chart(macdCtx, {
+                type: 'line',
+                data: {
+                    labels: data.labels, // Use the same labels as the price chart
+                    datasets: [
+                        {
+                            label: 'MACD Line',
+                            data: data.macdLine,
+                            borderColor: 'rgba(255, 159, 64, 1)',
+                            fill: false,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: 'Signal Line',
+                            data: data.signalLine,
+                            borderColor: 'rgba(153, 102, 255, 1)',
+                            fill: false,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: 'MACD Histogram',
+                            data: data.histogram,
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            type: 'bar',
+                            yAxisID: 'y',
+                        },
+                    ]
+                },
+                options: {
+                    scales: {
+                        x: {
+                            type: 'time', // Use time scale, matching the main chart
+                            time: {
+                                unit: 'day' // Display by day
+                            }
+                        },
+                        y: {
+                            beginAtZero: false,
+                            position: 'left',
+                            title: {
+                                display: true,
+                                text: 'MACD'
+                            }
+                        }
+                    },
+                    plugins: {
+                        zoom: {
+                            pan: {
+                                enabled: true,
+                                mode: 'x', // Enable panning along the x-axis
+                            },
+                            zoom: {
+                                wheel: {
+                                    enabled: true, // Enable zooming with the mouse wheel
+                                },
+                                pinch: {
+                                    enabled: true // Enable zooming with pinch gestures
+                                },
+                                mode: 'x', // Enable zooming along the x-axis
+                            }
+                        }
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+
+</html>
