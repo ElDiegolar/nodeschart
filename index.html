@@ -14,12 +14,14 @@
             align-items: center;
             padding: 20px;
             background-color: #f0f0f0;
+            position: relative;
         }
 
         #chartContainer {
             width: 100%;
             max-width: 1200px;
             margin-top: 20px;
+            position: relative;
         }
 
         select {
@@ -32,6 +34,20 @@
             justify-content: center;
             align-items: center;
         }
+
+        #drawCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 10;
+            pointer-events: none;
+        }
+
+        #screenshotButton,
+        #toggleDrawModeButton,
+        #clearDrawingsButton {
+            margin-top: 10px;
+        }
     </style>
 </head>
 
@@ -42,6 +58,7 @@
             <option value="BTCUSDT">BTC/USDT</option>
             <option value="ETHUSDT">ETH/USDT</option>
             <option value="BNBUSDT">BNB/USDT</option>
+            <option value="XRPUSDT">XRP/USDT</option>
         </select>
         <select id="candleTimeframeSelect">
             <option value="1m">1 Minute</option>
@@ -52,7 +69,14 @@
             <option value="1d">1 Day</option>
         </select>
     </div>
-    <div id="chartContainer"></div>
+
+    <div id="chartContainer">
+        <div id="chart"></div>
+        <canvas id="drawCanvas" width="1200" height="600"></canvas>
+    </div>
+    <button id="screenshotButton">Take Screenshot</button>
+    <button id="toggleDrawModeButton">Toggle Drawing Mode</button>
+    <button id="clearDrawingsButton">Clear Drawings</button>
 
     <script>
         const timeframes = ['1m', '5m', '15m', '1h', '4h', '1d'];
@@ -61,17 +85,27 @@
         let ws;
         let zoomState = null;
         let seriesVisibility = timeframes.map(() => true); // Track visibility of each series
+        let drawing = false;
+        let startX, startY;
+        let isDrawingMode = false; // Flag to indicate if drawing mode is active
+        let lines = []; // Array to store all drawn lines
 
         const symbolSelect = document.getElementById('symbolSelect');
         const candleTimeframeSelect = document.getElementById('candleTimeframeSelect');
+        const canvas = document.getElementById('drawCanvas');
+        const ctx = canvas.getContext('2d');
+        const screenshotButton = document.getElementById('screenshotButton');
+        const toggleDrawModeButton = document.getElementById('toggleDrawModeButton');
+        const clearDrawingsButton = document.getElementById('clearDrawingsButton');
 
         // Initialize the chart
         function initializeChart() {
             const options = {
-                series: timeframes.map((tf) => ({
+                series: timeframes.map((tf, index) => ({
                     name: tf,
                     type: 'line',
                     data: [],
+                    visible: seriesVisibility[index] // Set initial visibility state
                 })),
                 chart: {
                     height: 600,
@@ -81,17 +115,22 @@
                     },
                     events: {
                         zoomed: function (chartContext, { xaxis }) {
-                            zoomState = xaxis;
-                            updateYaxisScale(xaxis); // Adjust y-axis scale on zoom
-                            updateStrokeWidth(xaxis); // Adjust stroke width on zoom
+                            if (!isDrawingMode) {
+                                zoomState = xaxis;
+                                updateYaxisScale(xaxis); // Adjust y-axis scale on zoom
+                                updateStrokeWidth(); // Adjust stroke width on zoom
+                            }
                         },
                         beforeResetZoom: function () {
-                            zoomState = null;
-                            resetYaxisScale(); // Reset y-axis scale on reset zoom
-                            resetStrokeWidth(); // Reset stroke width on reset zoom
+                            if (!isDrawingMode) {
+                                zoomState = null;
+                                resetYaxisScale(); // Reset y-axis scale on reset zoom
+                                resetStrokeWidth(); // Reset stroke width on reset zoom
+                            }
                         },
                         legendClick: function (chartContext, seriesIndex) {
                             seriesVisibility[seriesIndex] = !seriesVisibility[seriesIndex]; // Toggle visibility state
+                            return false; // Prevent default legend click behavior
                         },
                     },
                 },
@@ -100,7 +139,7 @@
                     align: 'left',
                 },
                 stroke: {
-                    curve: 'stepline',
+                    curve: 'smooth',
                     width: 2,
                 },
                 xaxis: {
@@ -116,43 +155,19 @@
                 },
                 tooltip: {
                     shared: true,
-                    custom: function ({ seriesIndex, dataPointIndex, w }) {
-                        const series = w.config.series[seriesIndex];
-                        const dataPoint = series.data[dataPointIndex];
-
-                        if (series.type === 'candlestick') {
-                            const [o, h, l, c] = dataPoint.y;
-                            return (
-                                '<div class="apexcharts-tooltip-box">' +
-                                `<div>${series.name}</div>` +
-                                `<div>Open: ${o}</div>` +
-                                `<div>High: ${h}</div>` +
-                                `<div>Low: ${l}</div>` +
-                                `<div>Close: ${c}</div>` +
-                                '</div>'
-                            );
-                        } else {
-                            return (
-                                '<div class="apexcharts-tooltip-box">' +
-                                `<div>${series.name}</div>` +
-                                `<div>Close: ${dataPoint.y}</div>` +
-                                '</div>'
-                            );
-                        }
-                    },
                 },
             };
 
-            chart = new ApexCharts(document.querySelector('#chartContainer'), options);
+            chart = new ApexCharts(document.querySelector('#chart'), options);
             chart.render();
         }
 
         // Update the y-axis scale dynamically based on zoom
         function updateYaxisScale(xaxis) {
-            const visibleData = chartData['1m'].filter(dataPoint => {
+            const visibleData = chartData['1m']?.filter(dataPoint => {
                 const date = new Date(dataPoint.x);
                 return date >= xaxis.min && date <= xaxis.max;
-            });
+            }) || [];
 
             if (visibleData.length > 0) {
                 const yValues = visibleData.flatMap(d => [d.o, d.h, d.l, d.c]);
@@ -172,11 +187,131 @@
         function resetYaxisScale() {
             chart.updateOptions({
                 yaxis: {
-                    min: undefined, // Let the chart determine the best min and max automatically
+                    min: undefined,
                     max: undefined,
                 }
             });
         }
+
+        // Function to update stroke width based on zoom or timeframe
+        function updateStrokeWidth() {
+            const selectedCandleTimeframe = candleTimeframeSelect.value;
+            const newStrokeWidths = timeframes.map((tf) => (tf === selectedCandleTimeframe ? 0 : 2));
+
+            chart.updateOptions({
+                stroke: {
+                    width: newStrokeWidths,
+                },
+            });
+        }
+
+        // Function to reset stroke width when zoom is reset
+        function resetStrokeWidth() {
+            chart.updateOptions({
+                stroke: {
+                    width: 2, // Reset to default width
+                },
+            });
+        }
+
+        // Drawing functionality on canvas
+        canvas.addEventListener('mousedown', function (e) {
+            if (isDrawingMode) {
+                drawing = true;
+                const rect = canvas.getBoundingClientRect();
+                startX = e.clientX - rect.left;
+                startY = e.clientY - rect.top;
+            }
+        });
+
+        canvas.addEventListener('mousemove', function (e) {
+            if (drawing && isDrawingMode) {
+                const rect = canvas.getBoundingClientRect();
+                const currentX = e.clientX - rect.left;
+                const currentY = e.clientY - rect.top;
+                clearCanvas();
+                drawStoredLines(); // Redraw previous lines
+                drawLine(startX, startY, currentX, currentY);
+            }
+        });
+
+        canvas.addEventListener('mouseup', function () {
+            if (isDrawingMode && drawing) {
+                const rect = canvas.getBoundingClientRect();
+                const endX = event.clientX - rect.left;
+                const endY = event.clientY - rect.top;
+                lines.push({ startX, startY, endX, endY }); // Save the line
+                drawing = false;
+            }
+        });
+
+        // Function to draw a line
+        function drawLine(x1, y1, x2, y2) {
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.strokeStyle = '#FF0000'; // Red color for the line
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.closePath();
+        }
+
+        // Function to clear canvas
+        function clearCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        // Function to draw all stored lines
+        function drawStoredLines() {
+            lines.forEach(line => {
+                drawLine(line.startX, line.startY, line.endX, line.endY);
+            });
+        }
+
+        // Screenshot functionality
+        screenshotButton.addEventListener('click', function () {
+            const chartElement = document.querySelector('#chart svg');
+            const chartSVG = new XMLSerializer().serializeToString(chartElement);
+            const chartBase64 = `data:image/svg+xml;base64,${btoa(chartSVG)}`;
+            const img = new Image();
+            img.src = chartBase64;
+
+            img.onload = function () {
+                const screenshotCanvas = document.createElement('canvas');
+                screenshotCanvas.width = canvas.width;
+                screenshotCanvas.height = canvas.height;
+                const screenshotCtx = screenshotCanvas.getContext('2d');
+
+                screenshotCtx.drawImage(img, 0, 0);
+                screenshotCtx.drawImage(canvas, 0, 0);
+
+                const link = document.createElement('a');
+                link.href = screenshotCanvas.toDataURL('image/png');
+                link.download = 'chart-screenshot.png';
+                link.click();
+            };
+        });
+
+        // Toggle drawing mode
+        toggleDrawModeButton.addEventListener('click', function () {
+            isDrawingMode = !isDrawingMode;
+            if (isDrawingMode) {
+                ws.close(); // Stop WebSocket updates while in drawing mode
+                toggleDrawModeButton.textContent = 'Exit Drawing Mode';
+                canvas.style.pointerEvents = 'auto'; // Enable pointer events for drawing
+            } else {
+                connectWebSocket(symbolSelect.value); // Reconnect WebSocket when exiting drawing mode
+                toggleDrawModeButton.textContent = 'Enter Drawing Mode';
+                canvas.style.pointerEvents = 'none'; // Disable pointer events when not in drawing mode
+            }
+        });
+
+        // Clear all drawings
+        clearDrawingsButton.addEventListener('click', function () {
+            lines = []; // Clear stored lines
+            clearCanvas(); // Clear the canvas
+        });
+
         // Update the chart with new data
         function updateChart(newData) {
             chartData = newData;
@@ -187,49 +322,27 @@
                 return {
                     name: tf,
                     type: isSelectedTimeframe ? 'candlestick' : 'line',
-                    data: chartData[tf].map((d) => ({
+                    data: chartData[tf]?.map((d) => ({
                         x: new Date(d.x),
                         y: isSelectedTimeframe ? [d.o, d.h, d.l, d.c] : d.c,
-                    })),
-                    visible: seriesVisibility[index], // Apply visibility from saved state
+                    })) || [],
                 };
-            });
-
-            // Update stroke width and series data
-            chart.updateOptions({
-                stroke: {
-                    curve: 'stepline',
-                    width: timeframes.map((tf) => (tf === selectedCandleTimeframe ? 0 : 2)),
-                },
             });
 
             chart.updateSeries(seriesData);
 
+            // Apply visibility state after updating series
+            seriesVisibility.forEach((isVisible, index) => {
+                if (isVisible) {
+                    chart.showSeries(timeframes[index]);
+                } else {
+                    chart.hideSeries(timeframes[index]);
+                }
+            });
+
             if (zoomState) {
                 chart.zoomX(zoomState.min, zoomState.max);
             }
-        }
-
-        // Function to adjust stroke width based on zoom level
-        function updateStrokeWidth(xaxis) {
-            const visibleRange = xaxis.max - xaxis.min;
-            const zoomLevel = visibleRange / (xaxis.max - xaxis.min); // Calculate the zoom level
-
-            const newWidth = Math.max(0.2, 2 / zoomLevel); // Adjust the width based on zoom level
-            chart.updateOptions({
-                stroke: {
-                    width: newWidth,
-                },
-            });
-        }
-
-        // Function to reset stroke width when zoom is reset
-        function resetStrokeWidth() {
-            chart.updateOptions({
-                stroke: {
-                    width: 1, // Reset to default width
-                },
-            });
         }
 
         // Connect WebSocket and handle real-time updates
@@ -241,20 +354,21 @@
             ws = new WebSocket(`ws://${window.location.host}/ws?symbol=${symbol}`);
 
             ws.onmessage = function (event) {
-                const data = JSON.parse(event.data);
+                if (!isDrawingMode) {
+                    const data = JSON.parse(event.data);
 
-                if (data.realTimeUpdate) {
-                    const update = data.realTimeUpdate;
-                    // Update the 1m data with real-time information
-                    if (chartData['1m']) {
-                        chartData['1m'].push(update);
-                        if (chartData['1m'].length > 200) {
-                            chartData['1m'].shift();
+                    if (data.realTimeUpdate) {
+                        const update = data.realTimeUpdate;
+                        if (chartData['1m']) {
+                            chartData['1m'].push(update);
+                            if (chartData['1m'].length > 200) {
+                                chartData['1m'].shift();
+                            }
+                            updateChart(chartData);
                         }
-                        updateChart(chartData);
+                    } else {
+                        updateChart(data);
                     }
-                } else {
-                    updateChart(data);
                 }
             };
 
@@ -267,9 +381,8 @@
             };
         }
 
-        // Event listeners for symbol and timeframe changes
         symbolSelect.addEventListener('change', function () {
-            zoomState = null; // Reset zoom state when changing symbol
+            zoomState = null;
             connectWebSocket(this.value);
         });
 
@@ -277,6 +390,7 @@
             if (chartData['1m']) {
                 updateChart(chartData);
             }
+            updateStrokeWidth(); // Adjust the stroke width when changing the timeframe
         });
 
         // Initialize the chart and connect WebSocket on page load
