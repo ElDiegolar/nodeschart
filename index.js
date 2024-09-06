@@ -1,10 +1,21 @@
 const express = require("express");
+const WebSocket = require("ws");
 const axios = require("axios");
 const path = require("path");
+const http = require("http");
+
 const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
 const port = 3000;
 
-// Function to fetch data from Binance for a specific interval
+// Serve the HTML file
+app.get("/", (req, res) => {
+	res.sendFile(path.join(__dirname, "index.html"));
+});
+
+// Function to fetch historical data for different intervals
 async function getBinanceData(symbol, interval, limit) {
 	try {
 		const response = await axios.get("https://api.binance.com/api/v3/klines", {
@@ -17,113 +28,83 @@ async function getBinanceData(symbol, interval, limit) {
 		return response.data;
 	} catch (error) {
 		console.error(error);
-		return null;
+		return [];
 	}
 }
 
-// Helper function to calculate Simple Moving Averages
-function calculateSMA(data, period) {
-	const sma = [];
-	for (let i = period - 1; i < data.length; i++) {
-		const sum = data.slice(i + 1 - period, i + 1).reduce((acc, val) => acc + parseFloat(val[4]), 0);
-		sma.push({
-			x: new Date(data[i][0]).toISOString(),
-			y: sum / period,
+// Helper function to format data for candlestick chart
+function formatData(data) {
+	return data.map((entry) => ({
+		x: new Date(entry[0]).toISOString(),
+		o: parseFloat(entry[1]),
+		h: parseFloat(entry[2]),
+		l: parseFloat(entry[3]),
+		c: parseFloat(entry[4]),
+	}));
+}
+
+// WebSocket connection with Binance for real-time price data
+function connectToBinanceWebSocket(symbol, wsClient) {
+	const intervals = ["1m", "5m", "15m", "1h", "4h", "1d"];
+	const promises = intervals.map((interval) => getBinanceData(symbol, interval, 200));
+
+	Promise.all(promises).then((results) => {
+		const [minute1Data, minute5Data, minute15Data, hour1Data, hour4Data, dailyData] = results;
+
+		const formattedData = {
+			"1m": formatData(minute1Data),
+			"5m": formatData(minute5Data),
+			"15m": formatData(minute15Data),
+			"1h": formatData(hour1Data),
+			"4h": formatData(hour4Data),
+			"1d": formatData(dailyData),
+		};
+
+		// Send the historical data to the client
+		wsClient.send(JSON.stringify(formattedData));
+
+		// Start real-time WebSocket stream from Binance (1-minute intervals)
+		const binanceSocket = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_1m`);
+
+		// Handle real-time price data
+		binanceSocket.on("message", (data) => {
+			const message = JSON.parse(data);
+			const candle = message.k;
+
+			// Format the real-time data
+			const realTimeData = {
+				x: new Date(candle.t).toISOString(),
+				o: parseFloat(candle.o),
+				h: parseFloat(candle.h),
+				l: parseFloat(candle.l),
+				c: parseFloat(candle.c),
+			};
+
+			// Send real-time data to the client
+			wsClient.send(JSON.stringify({ realTimeUpdate: realTimeData }));
 		});
-	}
-	return sma;
+
+		binanceSocket.on("close", () => {
+			console.log(`Binance WebSocket closed for ${symbol}`);
+		});
+	});
 }
 
-// Helper function to calculate MACD
-function calculateMACD(data, shortPeriod = 12, longPeriod = 26, signalPeriod = 9) {
-	const macdLine = [];
-	const signalLine = [];
-	const histogram = [];
+// WebSocket server to listen to frontend
+wss.on("connection", (ws, req) => {
+	const params = new URLSearchParams(req.url.replace("/ws?", ""));
+	const symbol = params.get("symbol");
 
-	let shortEMA = 0;
-	let longEMA = 0;
-
-	for (let i = 0; i < data.length; i++) {
-		const close = parseFloat(data[i][4]);
-
-		shortEMA = i === 0 ? close : (close - shortEMA) * (2 / (shortPeriod + 1)) + shortEMA;
-		longEMA = i === 0 ? close : (close - longEMA) * (2 / (longPeriod + 1)) + longEMA;
-
-		const macdValue = shortEMA - longEMA;
-		macdLine.push({ x: new Date(data[i][0]).toISOString(), y: macdValue });
-
-		if (i >= longPeriod - 1) {
-			const signalEMA = i === longPeriod - 1 ? macdValue : (macdValue - signalLine[signalLine.length - 1].y) * (2 / (signalPeriod + 1)) + signalLine[signalLine.length - 1].y;
-			signalLine.push({ x: new Date(data[i][0]).toISOString(), y: signalEMA });
-			histogram.push({ x: new Date(data[i][0]).toISOString(), y: macdValue - signalEMA });
-		} else {
-			signalLine.push({ x: new Date(data[i][0]).toISOString(), y: 0 });
-			histogram.push({ x: new Date(data[i][0]).toISOString(), y: 0 });
-		}
+	if (symbol) {
+		connectToBinanceWebSocket(symbol, ws);
 	}
 
-	return { macdLine, signalLine, histogram, longPeriod };
-}
-
-async function prepareChartData() {
-	const symbol = "XRPUSDT";
-	const limit = 200;
-
-	// Fetch data for 1d, 4h, and 1h intervals
-	const [dayData, hour4Data, hour1Data] = await Promise.all([
-		getBinanceData(symbol, "1d", limit),
-		getBinanceData(symbol, "4h", limit * 6), // 6 * 4h = 1d
-		getBinanceData(symbol, "1h", limit * 24), // 24 * 1h = 1d
-	]);
-
-	if (!dayData || !hour4Data || !hour1Data) return null;
-
-	const labels = dayData.map((entry) => new Date(entry[0]).toISOString());
-	const prices = dayData.map((entry) => parseFloat(entry[4])); // Close price
-
-	const sma50 = calculateSMA(dayData, 50);
-	const sma200 = calculateSMA(dayData, 200);
-	const { macdLine, signalLine, histogram, longPeriod } = calculateMACD(dayData);
-
-	// Process 4-hour and 1-hour data
-	const hour4Prices = hour4Data.map((entry) => ({
-		x: new Date(entry[0]).toISOString(),
-		y: parseFloat(entry[4]),
-	}));
-
-	const hour1Prices = hour1Data.map((entry) => ({
-		x: new Date(entry[0]).toISOString(),
-		y: parseFloat(entry[4]),
-	}));
-
-	// Ensure all data starts at the same point (after enough data for longPeriod)
-	const startIndex = longPeriod - 1;
-
-	return {
-		labels: labels.slice(startIndex),
-		prices: prices.slice(startIndex),
-		sma50: sma50.slice(startIndex),
-		sma200: sma200.slice(startIndex),
-		macdLine: macdLine.slice(startIndex),
-		signalLine: signalLine.slice(startIndex),
-		histogram: histogram.slice(startIndex),
-		hour4Prices: hour4Prices.slice(hour4Prices.length - (labels.length - startIndex)),
-		hour1Prices: hour1Prices.slice(hour1Prices.length - (labels.length - startIndex)),
-	};
-}
-
-// Serve the HTML file
-app.get("/", (req, res) => {
-	res.sendFile(path.join(__dirname, "index.html"));
-});
-
-// API endpoint to get chart data
-app.get("/data", async (req, res) => {
-	const chartData = await prepareChartData();
-	res.json(chartData);
+	ws.on("close", () => {
+		console.log("Client disconnected");
+	});
 });
 
 // Start the server
-app.listen(port, () => {
+server.listen(port, () => {
 	console.log(`Server running at http://localhost:${port}`);
 });

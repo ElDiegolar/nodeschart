@@ -1,198 +1,255 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
-    <title>Crypto Chart with SMA, MACD, 4-Hour, and 1-Hour Data</title>
-    <!-- Include Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- Include Date Adapter for time scales -->
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
-    <!-- Include Chart.js Zoom Plugin -->
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cryptocurrency Multi-Timeframe Chart</title>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
     <style>
-        /* Ensure the MACD chart is thinner and spans 100% width */
-
-
-        /* Make sure the crypto chart spans 100% width as well */
-        #cryptoChart {
-            width: 100% !important;
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            background-color: #f0f0f0;
         }
 
-        /* To make sure both charts are responsive */
-        canvas {
-            display: block;
+        #chartContainer {
+            width: 100%;
+            max-width: 1200px;
+            margin-top: 20px;
+        }
+
+        select {
+            margin: 10px 5px;
+            padding: 5px;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            align-items: center;
         }
     </style>
 </head>
 
 <body>
-    <div>
-        <canvas id="cryptoChart"></canvas>
+    <h1>Cryptocurrency Multi-Timeframe Chart</h1>
+    <div class="controls">
+        <select id="symbolSelect">
+            <option value="BTCUSDT">BTC/USDT</option>
+            <option value="ETHUSDT">ETH/USDT</option>
+            <option value="BNBUSDT">BNB/USDT</option>
+        </select>
+        <select id="candleTimeframeSelect">
+            <option value="1m">1 Minute</option>
+            <option value="5m">5 Minutes</option>
+            <option value="15m">15 Minutes</option>
+            <option value="1h">1 Hour</option>
+            <option value="4h">4 Hours</option>
+            <option value="1d">1 Day</option>
+        </select>
     </div>
-    <div>
-        <canvas id="macdChart"></canvas>
-    </div>
+    <div id="chartContainer"></div>
+
     <script>
-        async function fetchData() {
-            // Fetch data from the Node.js server
-            const response = await fetch('/data');
-            const data = await response.json();
-            return data;
+        const timeframes = ['1m', '5m', '15m', '1h', '4h', '1d'];
+        let chart;
+        let chartData = {};
+        let ws;
+        let zoomState = null;
+        let seriesVisibility = timeframes.map(() => true); // Track visibility of each series
+
+        const symbolSelect = document.getElementById('symbolSelect');
+        const candleTimeframeSelect = document.getElementById('candleTimeframeSelect');
+
+        // Initialize the chart
+        function initializeChart() {
+            const options = {
+                series: timeframes.map((tf) => ({
+                    name: tf,
+                    type: 'line',
+                    data: [],
+                })),
+                chart: {
+                    height: 600,
+                    type: 'line',
+                    animations: {
+                        enabled: false,
+                    },
+                    events: {
+                        zoomed: function (chartContext, { xaxis }) {
+                            zoomState = xaxis;
+                            updateStrokeWidth(xaxis); // Adjust stroke width on zoom
+                        },
+                        beforeResetZoom: function () {
+                            zoomState = null;
+                            resetStrokeWidth(); // Reset stroke width on reset zoom
+                        },
+                        legendClick: function (chartContext, seriesIndex) {
+                            seriesVisibility[seriesIndex] = !seriesVisibility[seriesIndex]; // Toggle visibility state
+                        },
+                    },
+                },
+                title: {
+                    text: 'Cryptocurrency Multi-Timeframe Chart',
+                    align: 'left',
+                },
+                stroke: {
+                    curve: 'stepline',
+                    width: 2,
+                },
+                xaxis: {
+                    type: 'datetime',
+                },
+                yaxis: {
+                    tooltip: {
+                        enabled: true,
+                    },
+                },
+                legend: {
+                    show: true,
+                },
+                tooltip: {
+                    shared: true,
+                    custom: function ({ seriesIndex, dataPointIndex, w }) {
+                        const series = w.config.series[seriesIndex];
+                        const dataPoint = series.data[dataPointIndex];
+
+                        if (series.type === 'candlestick') {
+                            const [o, h, l, c] = dataPoint.y;
+                            return (
+                                '<div class="apexcharts-tooltip-box">' +
+                                `<div>${series.name}</div>` +
+                                `<div>Open: ${o}</div>` +
+                                `<div>High: ${h}</div>` +
+                                `<div>Low: ${l}</div>` +
+                                `<div>Close: ${c}</div>` +
+                                '</div>'
+                            );
+                        } else {
+                            return (
+                                '<div class="apexcharts-tooltip-box">' +
+                                `<div>${series.name}</div>` +
+                                `<div>Close: ${dataPoint.y}</div>` +
+                                '</div>'
+                            );
+                        }
+                    },
+                },
+            };
+
+            chart = new ApexCharts(document.querySelector('#chartContainer'), options);
+            chart.render();
         }
 
-        fetchData().then((data) => {
-            const priceCtx = document.getElementById('cryptoChart').getContext('2d');
-            const macdCtx = document.getElementById('macdChart').getContext('2d');
+        // Update the chart with new data
+        function updateChart(newData) {
+            chartData = newData;
+            const selectedCandleTimeframe = candleTimeframeSelect.value;
 
-            // Main Price Chart with SMAs, 4-hour, and 1-hour data
-            const cryptoChart = new Chart(priceCtx, {
-                type: 'line',
-                data: {
-                    labels: data.labels,
-                    datasets: [
-                        {
-                            label: 'BTC/USDT Price',
-                            data: data.prices,
-                            borderColor: 'rgba(75, 192, 192, 1)',
-                            fill: false,
-                            yAxisID: 'y',
-                        },
-                        {
-                            label: '50-Day SMA',
-                            data: data.sma50,
-                            borderColor: 'rgba(255, 99, 132, 1)',
-                            fill: false,
-                            yAxisID: 'y',
-                        },
-                        {
-                            label: '200-Day SMA',
-                            data: data.sma200,
-                            borderColor: 'rgba(54, 162, 235, 1)',
-                            fill: false,
-                            yAxisID: 'y',
-                        },
-                        {
-                            label: '4-Hour Price',
-                            data: data.hour4Prices,
-                            borderColor: 'rgba(255, 159, 64, 1)',
-                            fill: false,
-                            yAxisID: 'y',
-                            borderWidth: 1,
-                        },
-                        {
-                            label: '1-Hour Price',
-                            data: data.hour1Prices,
-                            borderColor: 'rgba(153, 102, 255, 1)',
-                            fill: false,
-                            yAxisID: 'y',
-                            borderWidth: 0.5,
-                        },
-                    ]
-                },
-                options: {
-                    scales: {
-                        x: {
-                            type: 'time', // Use time scale
-                            time: {
-                                unit: 'day' // Display by day
-                            }
-                        },
-                        y: {
-                            beginAtZero: false,
-                            position: 'left',
-                            title: {
-                                display: true,
-                                text: 'Price'
-                            }
-                        }
-                    },
-                    plugins: {
-                        zoom: {
-                            pan: {
-                                enabled: true,
-                                mode: 'x', // Enable panning along the x-axis
-                            },
-                            zoom: {
-                                wheel: {
-                                    enabled: true, // Enable zooming with the mouse wheel
-                                },
-                                pinch: {
-                                    enabled: true // Enable zooming with pinch gestures
-                                },
-                                mode: 'x', // Enable zooming along the x-axis
-                            }
-                        }
-                    }
-                }
+            const seriesData = timeframes.map((tf, index) => {
+                const isSelectedTimeframe = tf === selectedCandleTimeframe;
+                return {
+                    name: tf,
+                    type: isSelectedTimeframe ? 'candlestick' : 'line',
+                    data: chartData[tf].map((d) => ({
+                        x: new Date(d.x),
+                        y: isSelectedTimeframe ? [d.o, d.h, d.l, d.c] : d.c,
+                    })),
+                    visible: seriesVisibility[index], // Apply visibility from saved state
+                };
             });
 
-            // MACD Chart with the same time scale
-            const macdChart = new Chart(macdCtx, {
-                type: 'line',
-                data: {
-                    labels: data.labels, // Use the same labels as the price chart
-                    datasets: [
-                        {
-                            label: 'MACD Line',
-                            data: data.macdLine,
-                            borderColor: 'rgba(255, 159, 64, 1)',
-                            fill: false,
-                            yAxisID: 'y',
-                        },
-                        {
-                            label: 'Signal Line',
-                            data: data.signalLine,
-                            borderColor: 'rgba(153, 102, 255, 1)',
-                            fill: false,
-                            yAxisID: 'y',
-                        },
-                        {
-                            label: 'MACD Histogram',
-                            data: data.histogram,
-                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
-                            borderColor: 'rgba(75, 192, 192, 1)',
-                            type: 'bar',
-                            yAxisID: 'y',
-                        },
-                    ]
+            // Update stroke width and series data
+            chart.updateOptions({
+                stroke: {
+                    curve: 'stepline',
+                    width: timeframes.map((tf) => (tf === selectedCandleTimeframe ? 0 : 2)),
                 },
-                options: {
-                    scales: {
-                        x: {
-                            type: 'time', // Use time scale, matching the main chart
-                            time: {
-                                unit: 'day' // Display by day
-                            }
-                        },
-                        y: {
-                            beginAtZero: false,
-                            position: 'left',
-                            title: {
-                                display: true,
-                                text: 'MACD'
-                            }
-                        }
-                    },
-                    plugins: {
-                        zoom: {
-                            pan: {
-                                enabled: true,
-                                mode: 'x', // Enable panning along the x-axis
-                            },
-                            zoom: {
-                                wheel: {
-                                    enabled: true, // Enable zooming with the mouse wheel
-                                },
-                                pinch: {
-                                    enabled: true // Enable zooming with pinch gestures
-                                },
-                                mode: 'x', // Enable zooming along the x-axis
-                            }
-                        }
-                    }
-                }
             });
+
+            chart.updateSeries(seriesData);
+
+            if (zoomState) {
+                chart.zoomX(zoomState.min, zoomState.max);
+            }
+        }
+
+        // Function to adjust stroke width based on zoom level
+        function updateStrokeWidth(xaxis) {
+            const visibleRange = xaxis.max - xaxis.min;
+            const zoomLevel = visibleRange / (xaxis.max - xaxis.min); // Calculate the zoom level
+
+            const newWidth = Math.max(0.2, 2 / zoomLevel); // Adjust the width based on zoom level
+            chart.updateOptions({
+                stroke: {
+                    width: newWidth,
+                },
+            });
+        }
+
+        // Function to reset stroke width when zoom is reset
+        function resetStrokeWidth() {
+            chart.updateOptions({
+                stroke: {
+                    width: 1, // Reset to default width
+                },
+            });
+        }
+
+        // Connect WebSocket and handle real-time updates
+        function connectWebSocket(symbol) {
+            if (ws) {
+                ws.close();
+            }
+
+            ws = new WebSocket(`ws://${window.location.host}/ws?symbol=${symbol}`);
+
+            ws.onmessage = function (event) {
+                const data = JSON.parse(event.data);
+
+                if (data.realTimeUpdate) {
+                    const update = data.realTimeUpdate;
+                    // Update the 1m data with real-time information
+                    if (chartData['1m']) {
+                        chartData['1m'].push(update);
+                        if (chartData['1m'].length > 200) {
+                            chartData['1m'].shift();
+                        }
+                        updateChart(chartData);
+                    }
+                } else {
+                    updateChart(data);
+                }
+            };
+
+            ws.onerror = function (error) {
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = function () {
+                console.log('WebSocket connection closed');
+            };
+        }
+
+        // Event listeners for symbol and timeframe changes
+        symbolSelect.addEventListener('change', function () {
+            zoomState = null; // Reset zoom state when changing symbol
+            connectWebSocket(this.value);
         });
+
+        candleTimeframeSelect.addEventListener('change', function () {
+            if (chartData['1m']) {
+                updateChart(chartData);
+            }
+        });
+
+        // Initialize the chart and connect WebSocket on page load
+        initializeChart();
+        connectWebSocket(symbolSelect.value);
     </script>
 </body>
 
