@@ -82,10 +82,12 @@
                     events: {
                         zoomed: function (chartContext, { xaxis }) {
                             zoomState = xaxis;
+                            updateYaxisScale(xaxis); // Adjust y-axis scale on zoom
                             updateStrokeWidth(xaxis); // Adjust stroke width on zoom
                         },
                         beforeResetZoom: function () {
                             zoomState = null;
+                            resetYaxisScale(); // Reset y-axis scale on reset zoom
                             resetStrokeWidth(); // Reset stroke width on reset zoom
                         },
                         legendClick: function (chartContext, seriesIndex) {
@@ -145,6 +147,36 @@
             chart.render();
         }
 
+        // Update the y-axis scale dynamically based on zoom
+        function updateYaxisScale(xaxis) {
+            const visibleData = chartData['1m'].filter(dataPoint => {
+                const date = new Date(dataPoint.x);
+                return date >= xaxis.min && date <= xaxis.max;
+            });
+
+            if (visibleData.length > 0) {
+                const yValues = visibleData.flatMap(d => [d.o, d.h, d.l, d.c]);
+                const minY = Math.min(...yValues);
+                const maxY = Math.max(...yValues);
+
+                chart.updateOptions({
+                    yaxis: {
+                        min: minY,
+                        max: maxY,
+                    }
+                });
+            }
+        }
+
+        // Reset the y-axis scale when zoom is reset
+        function resetYaxisScale() {
+            chart.updateOptions({
+                yaxis: {
+                    min: undefined, // Let the chart determine the best min and max automatically
+                    max: undefined,
+                }
+            });
+        }
         // Update the chart with new data
         function updateChart(newData) {
             chartData = newData;
