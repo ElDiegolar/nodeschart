@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Market Data Viewer</title>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: #f0f0f0;
+        }
+
+        h1,
+        h2 {
+            color: #333;
+        }
+
+        select {
+            font-size: 16px;
+            padding: 8px;
+            margin-bottom: 20px;
+            width: 200px;
+        }
+
+        #chart-container {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+        }
+
+        .chart {
+            width: 100%;
+            margin-bottom: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            padding: 15px;
+        }
+
+        #market-signal {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        #signal-content {
+            white-space: pre-wrap;
+        }
+
+        .signal-bullish {
+            color: green;
+        }
+
+        .signal-bearish {
+            color: red;
+        }
+
+        .signal-neutral {
+            color: orange;
+        }
+
+        @media (min-width: 768px) {
+            .chart {
+                width: 48%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Market Data Viewer</h1>
+    <label for="market-select">Choose an instrument:</label>
+    <select id="market-select">
+        <option value="C:EURUSD">EUR/USD</option>
+        <option value="C:GBPUSD">GBP/USD</option>
+        <option value="C:USDJPY">USD/JPY</option>
+        <option value="C:XAUUSD">Gold (XAU/USD)</option>
+        <option value="I:DJI">US30 (Dow Jones)</option>
+        <option value="I:NDX">NAS100 (Nasdaq 100)</option>
+    </select>
+
+    <div id="market-signal">
+        <h2>Market Signal</h2>
+        <div id="signal-content">Waiting for market signal...</div>
+    </div>
+
+    <div id="chart-container">
+        <div id="day-chart" class="chart"></div>
+        <div id="week-chart" class="chart"></div>
+        <div id="month-chart" class="chart"></div>
+    </div>
+
+    <script>
+        const marketSelect = document.getElementById('market-select');
+        const signalContent = document.getElementById('signal-content');
+        let ws;
+        let charts = {};
+
+        function initializeCharts() {
+            const intervals = ['day', 'week', 'month'];
+            intervals.forEach(interval => {
+                const options = {
+                    series: [{
+                        data: []
+                    }],
+                    chart: {
+                        type: 'candlestick',
+                        height: 350
+                    },
+                    title: {
+                        text: `${interval.charAt(0).toUpperCase() + interval.slice(1)} Chart`,
+                        align: 'left'
+                    },
+                    xaxis: {
+                        type: 'datetime'
+                    },
+                    yaxis: {
+                        tooltip: {
+                            enabled: true
+                        }
+                    }
+                };
+
+                charts[interval] = new ApexCharts(document.querySelector(`#${interval}-chart`), options);
+                charts[interval].render();
+            });
+        }
+
+        function connectWebSocket(symbol) {
+            if (ws) {
+                ws.close();
+            }
+
+            ws = new WebSocket(`ws://localhost:3000/ws?symbol=${symbol}`);
+
+            ws.onmessage = function (event) {
+                const data = JSON.parse(event.data);
+                updateCharts(data);
+                updateMarketSignal(data.marketSignal);
+            };
+
+            ws.onclose = function () {
+                console.log('WebSocket connection closed.');
+            };
+        }
+
+        function updateCharts(data) {
+            if (data.error) {
+                alert(`Error: ${data.error}`);
+                return;
+            }
+
+            if (data.realTimeUpdate) {
+                // Update the day chart with real-time data
+                const realTimeData = data.realTimeUpdate;
+                charts['day'].appendData([{
+                    data: [{
+                        x: new Date(realTimeData.x).getTime(),
+                        y: [realTimeData.o, realTimeData.h, realTimeData.l, realTimeData.c]
+                    }]
+                }]);
+            } else {
+                // Update historical data for all intervals
+                for (const [interval, candles] of Object.entries(data)) {
+                    if (interval !== 'marketSignal') {
+                        const chartData = candles.map(candle => ({
+                            x: new Date(candle.x).getTime(),
+                            y: [candle.o, candle.h, candle.l, candle.c]
+                        }));
+                        charts[interval].updateSeries([{ data: chartData }]);
+                    }
+                }
+            }
+        }
+
+        function updateMarketSignal(signal) {
+            if (signal) {
+                signalContent.innerHTML = signal;
+                const signalLower = signal.toLowerCase();
+                signalContent.className = signalLower.includes('bullish') ? 'signal-bullish'
+                    : signalLower.includes('bearish') ? 'signal-bearish'
+                        : 'signal-neutral';
+            }
+        }
+
+        marketSelect.addEventListener('change', function () {
+            const selectedSymbol = marketSelect.value;
+            connectWebSocket(selectedSymbol);
+        });
+
+        window.onload = function () {
+            initializeCharts();
+            const initialSymbol = marketSelect.value;
+            connectWebSocket(initialSymbol);
+        };
+    </script>
+</body>
+
+</html>
